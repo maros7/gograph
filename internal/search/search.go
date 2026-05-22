@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ozgurcd/gograph/internal/depcache"
 	"github.com/ozgurcd/gograph/internal/graph"
 )
 
@@ -749,6 +750,46 @@ func Fields(g *graph.Graph, structName string) []Result {
 				})
 			}
 			break
+		}
+	}
+
+	// Fallback: check global dep cache if not found locally
+	if len(results) == 0 {
+		// Support package-qualified names like "timestamppb.Timestamp"
+		lookupName := structName
+		var pkgFilter string
+		if idx := strings.LastIndex(structName, "."); idx >= 0 {
+			pkgFilter = structName[:idx]
+			lookupName = structName[idx+1:]
+		}
+		var sym *graph.SymbolNode
+		var dg *depcache.DepGraph
+		var lookupErr error
+		if pkgFilter != "" {
+			sym, dg, lookupErr = depcache.LookupSymbol(lookupName, pkgFilter)
+		} else {
+			sym, dg, lookupErr = depcache.LookupSymbol(lookupName)
+		}
+		if lookupErr == nil && sym != nil && sym.Kind == graph.KindStruct {
+			// If package filter specified, verify it matches
+			if pkgFilter != "" && !strings.EqualFold(sym.PackageName, pkgFilter) {
+				// Skip — package doesn't match
+			} else {
+				for _, f := range sym.StructFields {
+					detail := f.Type
+					if f.Tag != "" {
+						detail += " " + f.Tag
+					}
+					results = append(results, Result{
+						Kind:   "field",
+						Name:   f.Name,
+						File:   fmt.Sprintf("%s@%s/%s", dg.Module, dg.Version, sym.File),
+						Line:   sym.Line,
+						Detail: detail,
+						Score:  5,
+					})
+				}
+			}
 		}
 	}
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ozgurcd/gograph/internal/depcache"
 	"github.com/ozgurcd/gograph/internal/graph"
 	"github.com/ozgurcd/gograph/internal/mcp"
 	"github.com/ozgurcd/gograph/internal/parser"
@@ -379,12 +380,19 @@ func runBuild(args []string) int {
 	root := "."
 	preciseMode := false
 	includeGenerated := false
+	indexDeps := false
+	var depsPattern string
 	var filteredArgs []string
 	for _, a := range args {
 		if a == "--precise" {
 			preciseMode = true
 		} else if a == "--include-generated" {
 			includeGenerated = true
+		} else if a == "--index-deps" {
+			indexDeps = true
+		} else if strings.HasPrefix(a, "--index-deps=") {
+			indexDeps = true
+			depsPattern = strings.TrimPrefix(a, "--index-deps=")
 		} else {
 			filteredArgs = append(filteredArgs, a)
 		}
@@ -491,7 +499,81 @@ func runBuild(args []string) int {
 		len(g.Packages), len(g.Files), len(g.Symbols), len(g.Calls))
 	fmt.Printf("  wrote %s\n", jsonPath)
 	fmt.Printf("  wrote %d markdown reports to %s/\n", len(reports), outputDir)
+
+	// Index dependencies into global cache if requested
+	if indexDeps {
+		indexDependencies(absRoot, depsPattern)
+	}
+
 	return 0
+}
+
+// indexDependencies parses go.mod and indexes dependency symbols into the
+// global cache at ~/.gograph/deps/. If pattern is non-empty, only deps whose
+// module path matches the pattern (using filepath.Match) are indexed.
+func indexDependencies(projectRoot, pattern string) {
+	goModFiles, err := depcache.FindGoModFiles(projectRoot)
+	if err != nil || len(goModFiles) == 0 {
+		fmt.Fprintf(os.Stderr, "  no go.mod files found for dep indexing\n")
+		return
+	}
+
+	// Collect unique deps across all modules
+	allDeps := make(map[string]depcache.ModuleDep)
+	for _, modFile := range goModFiles {
+		deps, err := depcache.ParseGoMod(modFile)
+		if err != nil {
+			continue
+		}
+		for _, d := range deps {
+			key := d.Module + "@" + d.Version
+			allDeps[key] = d
+		}
+	}
+
+	var indexed, skipped, cached int
+	for _, d := range allDeps {
+		// Apply pattern filter
+		if pattern != "" {
+			matched, _ := filepath.Match(pattern, d.Module)
+			if !matched {
+				// Also try prefix match for glob-like patterns
+				if !strings.HasPrefix(d.Module, strings.TrimSuffix(pattern, "*")) {
+					skipped++
+					continue
+				}
+			}
+		}
+
+		// Skip if already cached
+		if depcache.Has(d.Module, d.Version) {
+			cached++
+			continue
+		}
+
+		// Resolve module cache path
+		srcDir, err := depcache.ModuleCachePath(d.Module, d.Version)
+		if err != nil {
+			skipped++
+			continue
+		}
+
+		// Build and write dep graph
+		dg, err := depcache.BuildDepGraph(d.Module, d.Version, srcDir)
+		if err != nil {
+			skipped++
+			continue
+		}
+		if err := depcache.Write(dg); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: failed to cache %s@%s: %v\n", d.Module, d.Version, err)
+			continue
+		}
+		indexed++
+	}
+
+	if !jsonMode {
+		fmt.Printf("  deps: %d indexed, %d cached, %d skipped\n", indexed, cached, skipped)
+	}
 }
 
 // BuildOptions controls the build process.

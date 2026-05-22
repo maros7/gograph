@@ -44,7 +44,7 @@ func buildGraphWithRealFiles(t *testing.T) *graph.Graph {
 				Name: "Query",
 				Kind: graph.KindFunction,
 				File: searchFile,
-				Line: 48, // line where func Query starts in search.go
+				Line: 49, // line where func Query starts in search.go
 			},
 		},
 	}
