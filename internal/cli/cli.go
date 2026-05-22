@@ -303,6 +303,7 @@ AGENT WORKFLOW RULES (CRITICAL):
 
 INDEXING:
 build . [--precise]  : parse AST, write graph.json + GRAPH_REPORT.md to .gograph/
+                       [--include-generated] to also index generated files (.pb.go etc.)
 stale                : list source files newer than graph.json
 stats                : schema version, build time, symbol/call/route counts
 
@@ -377,10 +378,13 @@ hook-guard           : PreToolUse hook — blocks grep on Go symbols, redirects 
 func runBuild(args []string) int {
 	root := "."
 	preciseMode := false
+	includeGenerated := false
 	var filteredArgs []string
 	for _, a := range args {
 		if a == "--precise" {
 			preciseMode = true
+		} else if a == "--include-generated" {
+			includeGenerated = true
 		} else {
 			filteredArgs = append(filteredArgs, a)
 		}
@@ -405,7 +409,9 @@ func runBuild(args []string) int {
 		}
 	}
 
-	g, err := BuildGraph(absRoot)
+	g, err := BuildGraphWithOptions(absRoot, BuildOptions{
+		IncludeGenerated: includeGenerated,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building graph: %v\n", err)
 		return 1
@@ -464,8 +470,19 @@ func runBuild(args []string) int {
 	return 0
 }
 
+// BuildOptions controls the build process.
+type BuildOptions struct {
+	IncludeGenerated bool
+}
+
 func BuildGraph(absRoot string) (*graph.Graph, error) {
-	files, walkErrs := scanner.Walk(absRoot)
+	return BuildGraphWithOptions(absRoot, BuildOptions{})
+}
+
+func BuildGraphWithOptions(absRoot string, opts BuildOptions) (*graph.Graph, error) {
+	files, walkErrs := scanner.WalkWithOptions(absRoot, scanner.Options{
+		IncludeGenerated: opts.IncludeGenerated,
+	})
 	for _, e := range walkErrs {
 		fmt.Fprintf(os.Stderr, "  warning: %v\n", e)
 	}
@@ -981,6 +998,8 @@ INDEXING
                              Run after any major code change. Default path: .
                              Supports --precise to perform type-checked Class
                              Hierarchy Analysis (CHA) for more precise call edges.
+                             Use --include-generated to index generated files
+                             (*.pb.go, *_generated.go, "Code generated" comment).
   stale                      Check if graph.json is older than any source file.
                              Agents should run this before structural analysis.
   stats                      Compact index health summary: schema version, build
