@@ -395,11 +395,16 @@ func runBuild(args []string) int {
 
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
+		if jsonMode {
+			return PrintJSON(errEnvelope("build", "error resolving path: "+err.Error()))
+		}
 		fmt.Fprintf(os.Stderr, "error resolving path: %v\n", err)
 		return 1
 	}
 
-	fmt.Printf("gograph build: scanning %s\n", absRoot)
+	if !jsonMode {
+		fmt.Printf("gograph build: scanning %s\n", absRoot)
+	}
 
 	var baseline *graph.GraphBaseline
 	if oldG, err := loadGraph(absRoot); err == nil {
@@ -413,6 +418,9 @@ func runBuild(args []string) int {
 		IncludeGenerated: includeGenerated,
 	})
 	if err != nil {
+		if jsonMode {
+			return PrintJSON(errEnvelope("build", err.Error()))
+		}
 		fmt.Fprintf(os.Stderr, "error building graph: %v\n", err)
 		return 1
 	}
@@ -463,6 +471,20 @@ func runBuild(args []string) int {
 		}
 	}
 
+	if jsonMode {
+		result := struct {
+			Packages int `json:"packages"`
+			Files    int `json:"files"`
+			Symbols  int `json:"symbols"`
+			Calls    int `json:"calls"`
+		}{
+			Packages: len(g.Packages),
+			Files:    len(g.Files),
+			Symbols:  len(g.Symbols),
+			Calls:    len(g.Calls),
+		}
+		return PrintJSON(okEnvelope("build", "", result, 1))
+	}
 	fmt.Printf("  packages: %d  files: %d  symbols: %d  calls: %d\n",
 		len(g.Packages), len(g.Files), len(g.Symbols), len(g.Calls))
 	fmt.Printf("  wrote %s\n", jsonPath)
@@ -486,7 +508,9 @@ func BuildGraphWithOptions(absRoot string, opts BuildOptions) (*graph.Graph, err
 	for _, e := range walkErrs {
 		fmt.Fprintf(os.Stderr, "  warning: %v\n", e)
 	}
-	fmt.Fprintf(os.Stderr, "  found %d Go files to parse\n", len(files))
+	if !jsonMode {
+		fmt.Printf("  found %d Go files to parse\n", len(files))
+	}
 
 	g := &graph.Graph{
 		Version:     graph.Version,
