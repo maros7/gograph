@@ -1,6 +1,8 @@
 package search
 
 import (
+	"strings"
+
 	"github.com/ozgurcd/gograph/internal/graph"
 )
 
@@ -26,10 +28,29 @@ type ContextResult struct {
 // bundling its node details, source code, callers, callees, and test coverage.
 // Returns nil if no symbol matches.
 // rootDir is the repository root for source extraction (pass "." for cwd).
+// When an exact match exists, substring matches are excluded to reduce noise.
 func Context(g *graph.Graph, rootDir, term string) *ContextResult {
 	node := Node(g, term)
 	if len(node) == 0 {
 		return nil
+	}
+
+	// Prefer exact matches: if any result's name matches exactly (case-insensitive),
+	// drop substring-only matches to avoid pulling in unrelated variants.
+	tl := strings.ToLower(term)
+	var exact []Result
+	for _, r := range node {
+		// Extract base name for comparison (strip receiver prefix)
+		name := r.Name
+		if idx := strings.LastIndex(name, "."); idx >= 0 {
+			name = name[idx+1:]
+		}
+		if strings.ToLower(name) == tl {
+			exact = append(exact, r)
+		}
+	}
+	if len(exact) > 0 {
+		node = exact
 	}
 
 	src, srcErr := Source(g, rootDir, term)

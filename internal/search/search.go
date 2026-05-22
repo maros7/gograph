@@ -208,23 +208,77 @@ func Callers(g *graph.Graph, name string, includeTests bool) []Result {
 }
 
 // Callees returns call expressions found inside the given function/method name.
+// goBuiltins are function names that are language primitives and rarely
+// informative in call-graph output. Filtered from callees by default.
+var goBuiltins = map[string]bool{
+	"len": true, "cap": true, "make": true, "new": true,
+	"append": true, "copy": true, "delete": true, "close": true,
+	"panic": true, "recover": true, "print": true, "println": true,
+}
+
+// noisyCalleePatterns are callee name prefixes that are implementation details
+// (protobuf internals, generated boilerplate) and rarely useful in context output.
+var noisyCalleePrefixes = []string{
+	"protoimpl.",
+	"ms.StoreMessageInfo",
+	"ms.LoadMessageInfo",
+	"mi.MessageOf",
+	"file_", // protobuf rawDescGZIP functions
+}
+
+// isBuiltinCallee checks whether a raw callee name is a Go builtin.
+func isBuiltinCallee(name string) bool {
+	if goBuiltins[name] {
+		return true
+	}
+	for _, prefix := range noisyCalleePrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func Callees(g *graph.Graph, name string, includeTests bool) []Result {
 	nl := strings.ToLower(name)
 	matchedIDs := make(map[string]bool)
+	var exactIDs []string
 	for _, s := range g.Symbols {
 		sname := strings.ToLower(s.Name)
 		full := strings.ToLower(fmt.Sprintf("(%s).%s", s.Receiver, s.Name))
-		if sname == nl || strings.Contains(full, nl) || strings.Contains(sname, nl) {
+		if sname == nl || full == "("+nl+")."+sname || full == "(*"+nl+")."+sname {
+			exactIDs = append(exactIDs, s.ID)
 			matchedIDs[s.ID] = true
+		} else if strings.Contains(full, nl) || strings.Contains(sname, nl) {
+			matchedIDs[s.ID] = true
+		}
+	}
+	// If we have exact matches, use only those to avoid pulling in variants
+	if len(exactIDs) > 0 {
+		matchedIDs = make(map[string]bool)
+		for _, id := range exactIDs {
+			matchedIDs[id] = true
 		}
 	}
 
 	var results []Result
+	seenCallees := make(map[string]bool) // dedupe: callerName+calleeName
 	for _, c := range g.Calls {
 		if !includeTests && isTestFile(c.File) {
 			continue
 		}
 		if matchedIDs[c.CallerSymbolID] {
+			// Skip Go builtins
+			if isBuiltinCallee(c.CalleeRaw) {
+				continue
+			}
+			// Deduplicate: same caller calling same callee shown once
+			dedupeKey := c.CallerName + "->" + c.CalleeRaw
+			if seenCallees[dedupeKey] {
+				continue
+			}
+			seenCallees[dedupeKey] = true
+
 			snippet := ""
 			absPath := filepath.Join(g.Root, c.File)
 			if data, err := os.ReadFile(absPath); err == nil {
