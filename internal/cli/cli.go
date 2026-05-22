@@ -427,7 +427,9 @@ func runBuild(args []string) int {
 	g.Baseline = baseline
 
 	if preciseMode {
-		fmt.Println("  running type-checked precision analysis (this may take a moment)...")
+		if !jsonMode {
+			fmt.Println("  running type-checked precision analysis (this may take a moment)...")
+		}
 		// Delay import check by using precise.Enrich explicitly
 		if err := precise.Enrich(absRoot, g); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: precise enrichment failed: %v\n", err)
