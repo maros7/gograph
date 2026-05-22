@@ -134,6 +134,8 @@ func Run(args []string) int {
 		return runCoupling(args[1:])
 	case "context":
 		return runContext(args[1:])
+	case "navigate", "nav":
+		return runNavigate(args[1:])
 	case "hotspot":
 		return runHotspot(args[1:])
 	case "deps":
@@ -503,6 +505,10 @@ func runBuild(args []string) int {
 	// Index dependencies into global cache if requested
 	if indexDeps {
 		indexDependencies(absRoot, depsPattern)
+		// Build the fast lookup index after dep indexing
+		if err := depcache.BuildIndex(); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: failed to build dep index: %v\n", err)
+		}
 	}
 
 	return 0
@@ -1651,6 +1657,73 @@ func runContext(args []string) int {
 	}
 	fmt.Printf("=== CONTEXT: %s ===\n\n", term)
 	printContextResult(result, limit)
+	return 0
+}
+
+// runNavigate performs intent-driven graph navigation for token-efficient responses.
+// Usage: gograph navigate <intent> <symbol>
+//        gograph nav "marshal" RetailItemSalesPriceUpdated
+func runNavigate(args []string) int {
+	if len(args) < 2 {
+		if jsonMode {
+			return PrintJSON(errEnvelope("navigate", "usage: gograph navigate <intent> <symbol>"))
+		}
+		fmt.Fprintln(os.Stderr, "usage: gograph navigate <intent> <symbol>")
+		fmt.Fprintln(os.Stderr, "  intents: fields, source, marshal, unmarshal, callers, callees, overview")
+		return 1
+	}
+
+	intent := search.DetectIntent(args[0])
+	symbol := strings.Join(args[1:], " ")
+
+	g, err := loadGraph(".")
+	if err != nil {
+		if jsonMode {
+			return PrintJSON(errEnvelope("navigate", err.Error()))
+		}
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	root, _ := filepath.Abs(".")
+
+	result := search.Navigate(g, root, symbol, intent)
+	if result == nil {
+		if jsonMode {
+			return PrintJSON(okEnvelope("navigate", symbol, nil, 0))
+		}
+		fmt.Printf("No symbol found matching %q.\n", symbol)
+		return 0
+	}
+
+	if jsonMode {
+		return PrintJSON(okEnvelope("navigate", symbol, result, 1))
+	}
+
+	// Human-readable output
+	fmt.Printf("%s %s (%s:%d)\n", result.Kind, result.Symbol, result.File, result.Line)
+	if result.Doc != "" {
+		fmt.Printf("  %s\n", result.Doc)
+	}
+	if len(result.Fields) > 0 {
+		fmt.Println("  Fields:")
+		for _, f := range result.Fields {
+			jsonKey := ""
+			if f.JSON != "" {
+				jsonKey = " (json: " + f.JSON + ")"
+			}
+			fmt.Printf("    %s %s%s\n", f.Name, f.Type, jsonKey)
+		}
+	}
+	if len(result.Methods) > 0 {
+		fmt.Println("  Methods:")
+		for _, m := range result.Methods {
+			fmt.Printf("    %s\n", m)
+		}
+	}
+	if result.Source != "" {
+		fmt.Println("  Source:")
+		fmt.Println(result.Source)
+	}
 	return 0
 }
 

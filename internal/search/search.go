@@ -766,9 +766,9 @@ func Fields(g *graph.Graph, structName string) []Result {
 		var dg *depcache.DepGraph
 		var lookupErr error
 		if pkgFilter != "" {
-			sym, dg, lookupErr = depcache.LookupSymbol(lookupName, pkgFilter)
+			sym, dg, lookupErr = depcache.LookupSymbolFast(lookupName, pkgFilter)
 		} else {
-			sym, dg, lookupErr = depcache.LookupSymbol(lookupName)
+			sym, dg, lookupErr = depcache.LookupSymbolFast(lookupName)
 		}
 		if lookupErr == nil && sym != nil && sym.Kind == graph.KindStruct {
 			// If package filter specified, verify it matches

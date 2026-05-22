@@ -120,6 +120,8 @@ func TestAllCommandsRegistered(t *testing.T) {
 		"boundaries",
 		"endpoint",
 		"explain",
+		"navigate",
+		"nav",
 		"gate",
 		"snapshot",
 		"check",

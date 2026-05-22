@@ -107,26 +107,36 @@ func List() ([]string, error) {
 }
 
 // Clean removes cache entries not present in the given module@version set.
+// The keep map keys should be "module@version" strings.
 func Clean(keep map[string]bool) (removed int, err error) {
 	cacheDir, err := CacheDir()
 	if err != nil {
 		return 0, err
 	}
-	entries, err := os.ReadDir(cacheDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		return 0, nil
+	}
+
+	// Walk all graph.json files and remove those not in keep set
+	var toRemove []string
+	err = filepath.Walk(cacheDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil || info.IsDir() || info.Name() != "graph.json" {
+			return nil
 		}
+		// The parent directory name is module@version
+		dir := filepath.Dir(path)
+		rel, _ := filepath.Rel(cacheDir, dir)
+		if !keep[rel] {
+			toRemove = append(toRemove, dir)
+		}
+		return nil
+	})
+	if err != nil {
 		return 0, err
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if !keep[e.Name()] {
-			if err := os.RemoveAll(filepath.Join(cacheDir, e.Name())); err == nil {
-				removed++
-			}
+	for _, dir := range toRemove {
+		if err := os.RemoveAll(dir); err == nil {
+			removed++
 		}
 	}
 	return removed, nil
