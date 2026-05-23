@@ -122,6 +122,7 @@ func TestAllCommandsRegistered(t *testing.T) {
 		"explain",
 		"navigate",
 		"nav",
+		"clean",
 		"gate",
 		"snapshot",
 		"check",

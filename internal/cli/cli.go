@@ -14,6 +14,7 @@ import (
 
 	"github.com/ozgurcd/gograph/internal/depcache"
 	"github.com/ozgurcd/gograph/internal/graph"
+	"github.com/ozgurcd/gograph/internal/projectstore"
 	"github.com/ozgurcd/gograph/internal/mcp"
 	"github.com/ozgurcd/gograph/internal/parser"
 	"github.com/ozgurcd/gograph/internal/precise"
@@ -22,17 +23,17 @@ import (
 	"github.com/ozgurcd/gograph/internal/search"
 )
 
-const outputDir = ".gograph"
-const graphFile = ".gograph/graph.json"
-const reportFile = ".gograph/GRAPH_REPORT.md"
-const symFile = ".gograph/graph-symbols.md"
-const depsFile = ".gograph/graph-deps.md"
-const routesFile = ".gograph/graph-routes.md"
-const sqlFile = ".gograph/graph-sql.md"
-const errorsFile = ".gograph/graph-errors.md"
-const configFile = ".gograph/graph-config.md"
-const concFile = ".gograph/graph-concurrency.md"
-const testsFile = ".gograph/graph-tests.md"
+const outputDir = ".gograph" // legacy, still used for local fallback detection
+const graphFile = "graph.json"
+const reportFile = "GRAPH_REPORT.md"
+const symFile = "graph-symbols.md"
+const depsFile = "graph-deps.md"
+const routesFile = "graph-routes.md"
+const sqlFile = "graph-sql.md"
+const errorsFile = "graph-errors.md"
+const configFile = "graph-config.md"
+const concFile = "graph-concurrency.md"
+const testsFile = "graph-tests.md"
 
 // Version is set at build time via -ldflags; defaults to "dev" for local builds.
 var Version = "dev"
@@ -136,6 +137,8 @@ func Run(args []string) int {
 		return runContext(args[1:])
 	case "navigate", "nav":
 		return runNavigate(args[1:])
+	case "clean":
+		return runClean(args[1:])
 	case "hotspot":
 		return runHotspot(args[1:])
 	case "deps":
@@ -456,13 +459,19 @@ func runBuild(args []string) int {
 		fmt.Fprintf(os.Stderr, "warning: could not update .gitignore: %v\n", err)
 	}
 
-	jsonPath := filepath.Join(absRoot, graphFile)
-	if err := writeJSON(jsonPath, g); err != nil {
-		fmt.Fprintf(os.Stderr, "error writing graph.json: %v\n", err)
+	// Write graph to global project store (~/.gograph/projects/<repo>/<branch>/)
+	graphData, err := json.MarshalIndent(g, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error marshaling graph: %v\n", err)
 		return 1
 	}
+	if err := projectstore.WriteGraph(absRoot, graphData); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing graph to global store: %v\n", err)
+		return 1
+	}
+	graphPath, _ := projectstore.GraphPath(absRoot)
 
-	// Write all split markdown reports
+	// Write all split markdown reports to global store
 	reports := map[string]string{
 		reportFile: report.GenerateIndex(g),
 		symFile:    report.GenerateSymbols(g),
@@ -476,8 +485,7 @@ func runBuild(args []string) int {
 	}
 
 	for relPath, content := range reports {
-		fullPath := filepath.Join(absRoot, relPath)
-		if err := os.WriteFile(fullPath, []byte(content), 0o640); err != nil {
+		if err := projectstore.WriteReport(absRoot, relPath, []byte(content)); err != nil {
 			fmt.Fprintf(os.Stderr, "error writing %s: %v\n", relPath, err)
 			return 1
 		}
@@ -499,8 +507,8 @@ func runBuild(args []string) int {
 	}
 	fmt.Printf("  packages: %d  files: %d  symbols: %d  calls: %d\n",
 		len(g.Packages), len(g.Files), len(g.Symbols), len(g.Calls))
-	fmt.Printf("  wrote %s\n", jsonPath)
-	fmt.Printf("  wrote %d markdown reports to %s/\n", len(reports), outputDir)
+	fmt.Printf("  wrote %s\n", graphPath)
+	fmt.Printf("  wrote %d markdown reports\n", len(reports))
 
 	// Index dependencies into global cache if requested
 	if indexDeps {
@@ -962,11 +970,18 @@ func loadGraph(root string) (*graph.Graph, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
-	jsonPath := filepath.Join(absRoot, graphFile)
-	data, err := os.ReadFile(jsonPath)
+
+	// Try global project store first
+	data, err := projectstore.ReadGraph(absRoot)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s — run `gograph build` first: %w", jsonPath, err)
+		// Fallback: try legacy local .gograph/graph.json
+		localPath := filepath.Join(absRoot, ".gograph", graphFile)
+		data, err = os.ReadFile(localPath)
+		if err != nil {
+			return nil, fmt.Errorf("no graph found — run `gograph build` first (checked global store and %s)", localPath)
+		}
 	}
+
 	var g graph.Graph
 	if err := json.Unmarshal(data, &g); err != nil {
 		return nil, fmt.Errorf("parsing graph.json: %w", err)
@@ -1725,6 +1740,108 @@ func runNavigate(args []string) int {
 		fmt.Println(result.Source)
 	}
 	return 0
+}
+
+// runClean removes stale branch indices from the global store.
+// Usage: gograph clean [--days N] [--all] [--dry-run]
+func runClean(args []string) int {
+	maxDays := 30
+	allBranches := false
+	dryRun := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--days":
+			if i+1 < len(args) {
+				if n, err := strconv.Atoi(args[i+1]); err == nil {
+					maxDays = n
+				}
+				i++
+			}
+		case "--all":
+			allBranches = true
+		case "--dry-run":
+			dryRun = true
+		}
+	}
+
+	root, _ := filepath.Abs(".")
+
+	if allBranches {
+		if dryRun {
+			fmt.Println("would remove all branch indices for this project")
+			return 0
+		}
+		if err := projectstore.CleanAll(root); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Println("cleaned all branch indices")
+		return 0
+	}
+
+	// List what would be cleaned
+	branches, err := projectstore.ListBranches(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if jsonMode {
+		var stale []projectstore.BranchEntry
+		for _, b := range branches {
+			if b.AgeDays > maxDays && !isProtected(b.Branch) {
+				stale = append(stale, b)
+			}
+		}
+		if dryRun {
+			return PrintJSON(okEnvelope("clean", "", stale, len(stale)))
+		}
+		removed, _ := projectstore.CleanStale(root, maxDays)
+		result := struct {
+			Removed int `json:"removed"`
+			MaxDays int `json:"max_days"`
+		}{removed, maxDays}
+		return PrintJSON(okEnvelope("clean", "", result, removed))
+	}
+
+	// Human output
+	fmt.Printf("Branch indices (older than %d days will be cleaned):\n\n", maxDays)
+	var staleCount int
+	for _, b := range branches {
+		protected := ""
+		if isProtected(b.Branch) {
+			protected = " [protected]"
+		}
+		stale := ""
+		if b.AgeDays > maxDays && !isProtected(b.Branch) {
+			stale = " ← STALE"
+			staleCount++
+		}
+		fmt.Printf("  %-40s %3d days  %6.1f MB%s%s\n",
+			b.Branch, b.AgeDays, float64(b.Size)/(1024*1024), protected, stale)
+	}
+
+	if staleCount == 0 {
+		fmt.Println("\nNothing to clean.")
+		return 0
+	}
+
+	if dryRun {
+		fmt.Printf("\nWould remove %d stale branch(es).\n", staleCount)
+		return 0
+	}
+
+	removed, _ := projectstore.CleanStale(root, maxDays)
+	fmt.Printf("\nCleaned %d stale branch(es).\n", removed)
+	return 0
+}
+
+func isProtected(branch string) bool {
+	switch branch {
+	case "main", "master", "develop", "release":
+		return true
+	}
+	return false
 }
 
 func printContextResult(result *search.ContextResult, limit int) {
